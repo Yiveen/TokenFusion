@@ -2,5 +2,9 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/semantic_segmentation/ckpt/exp/models/SAM/segment-anything" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/semantic_segmentation/ckpt/exp_name/models/SAM/segment-anything" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/semantic_segmentation/ckpt/model/models/SAM/segment-anything" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/semantic_segmentation/models/SAM/segment-anything" vcs="Git" />
   </component>
 </project>

@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 from PIL import Image
 from torch.utils.data import Dataset
+import cv2
 
 
 def line_to_paths_fn_nyudv2(x, input_names):
@@ -62,6 +63,9 @@ class SegDataset(Dataset):
         sample = {}
         for i, key in enumerate(self.input_names):
             sample[key] = self.read_image(names[idxs[i]], key)
+            image = cv2.imread(names[idxs[i]])
+            samimage = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            sample['samimage'] = cv2.cvtColor(samimage, cv2.COLOR_BGR2RGB)
         try:
             mask = np.array(Image.open(names[idxs[-1]]))
         except FileNotFoundError:  # for sunrgbd

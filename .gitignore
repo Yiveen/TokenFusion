@@ -1,2 +1,9 @@
 .DS_Store
 __pycache__
+/semantic_segmentation/models/SAM/*
+/semantic_segmentation/ckpt/model/models/SAM/*
+/semantic_segmentation/imgs/
+/semantic_segmentation/pretrained/
+/semantic_segmentation/logs/
+/semantic_segmentation/pretrained_models/
+/semantic_segmentation/ckpt/

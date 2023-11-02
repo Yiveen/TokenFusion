@@ -17,7 +17,17 @@ from tqdm import tqdm
 
 from tensorboardX import SummaryWriter
 
-from semantic_segmentation.models.SAM.sam import SAM
+
+# 获取 distillation.py 所在文件夹的绝对路径
+current_path = os.path.dirname(os.path.abspath(__file__))
+# 拼接 sam.py 所在文件夹的绝对路径
+module_path = os.path.join(current_path, '../models/SAM/segment_anything')
+
+# 将模块所在路径添加到 Python 路径中
+sys.path.append(module_path)
+
+# 导入模块
+from sam import SAM  # 假设你想导入 sam.py 中的 SAM 类
 
 # 创建 TensorboardX 的 SummaryWriter 对象
 writer = SummaryWriter('./logs/tokenfusion_experiment')
@@ -99,7 +109,7 @@ def get_arguments():
                         help='path to save checkpoint (default: model)')
     parser.add_argument('--resume', default='', type=str, metavar='PATH',
                         help='path to latest checkpoint (default: none)')
-    parser.add_argument('--val-every', type=int, default=VAL_EVERY,
+    parser.add_argument('--val-every', type=int, default=2,
                         help='How often to validate current architecture.')
     parser.add_argument('--print-network', action='store_true', default=False,
                         help='Whether print newtork paramemters.')
@@ -132,10 +142,11 @@ def get_arguments():
     parser.add_argument('--backbone', default='mit_b1', type=str)
     parser.add_argument('--freeze_encoder', default=True, type=bool)
     parser.add_argument('--freeze_decoder_part', default=False, type=bool)
-    parser.add_argument('--sam_checkpoint', default='/home/yiwen/Agilerobots/segment-anything/sam_vit_h_4b8939.pth', type=str)
-    parser.add_argument('--dynamic_threshold', default=True, type=bool)
-    parser.add_argument('--pos_number', default=20, type=int)
-    parser.add_argument('--neg_number', default=40, type=int)
+    parser.add_argument('--sam_checkpoint', default='/home/yiwen.liu/TokenFusion/semantic_segmentation/models/SAM/segment-anything/sam_vit_h_4b8939.pth', type=str)
+    parser.add_argument('--model_type', default='vit_h',type=str)
+    parser.add_argument('--dynamic_threshold', default=False, type=bool)
+    parser.add_argument('--pos_number', default=1, type=int)
+    parser.add_argument('--neg_number', default=2, type=int)
     parser.add_argument('--alpha', default=0.3, type=int)
     parser.add_argument('--temp', default=7, type=int)
 
@@ -148,8 +159,8 @@ def create_segmenter(num_classes, gpu, backbone:str):
     segmenter = WeTr(backbone, num_classes)
     param_groups = segmenter.get_param_groups()
     assert (torch.cuda.is_available())
-    segmenter.to(gpu[0])
-    segmenter = torch.nn.DataParallel(segmenter, gpu)
+    segmenter.to(torch.device("cuda:0"))
+    segmenter = torch.nn.DataParallel(segmenter, [0])
     # segmenter = DistributedDataParallel(wetr, device_ids=[-1], find_unused_parameters=True)
     return segmenter, param_groups
 
@@ -249,53 +260,94 @@ def freeze_model(segmenter):
     Freeze the encoder part weights of the model
     '''
     if args.freeze_encoder == True:
-        for param in segmenter.encoder.parameters():
-            param.requires_grad = False
+        for name, param in segmenter.named_parameters():
+            if 'encoder' in name:
+                param.requires_grad = False
     if args.freeze_decoder_part == True:
-        for param in segmenter.decoder.parameters():
-            if param is not 'linear_pred':
+        for name, param in segmenter.named_parameters():
+            if 'decoder' in name and 'linear_pred' not in name:
                 param.requires_grad = False
     return segmenter
 
 
 def thres_out(outputs, dynamic=True):
-    thresholded_outputs = torch.zeros_like(outputs)
+    thresholded_outputs = torch.zeros_like(outputs).to(torch.device("cuda:0"))
     if dynamic:
         for i in range(outputs.shape[1]):  # 针对每个 channel
-            channel_output = outputs[:, i, :, :]
-            flatten = channel_output.flatten()
-            hist, bin_edges = torch.histc(flatten, bins=5)
+            channel_output = outputs[:, i, :, :].to(torch.device("cuda:0"))
 
-            peak_index = torch.argmax(hist)
-            threshold = bin_edges[peak_index]
-            thresholded_outputs[:, i, :, :] = torch.where(channel_output >= threshold, torch.tensor(1), torch.tensor(0))
+            flatten = channel_output.flatten()
+            hist = torch.histc(flatten, bins=5)
+            print(hist)
+
+            peak_value = torch.argmax(hist)
+            threshold = (((torch.max(channel_output) - torch.min(channel_output)) / 5.0 * peak_value) + torch.min(channel_output)).to(torch.device("cuda:0"))
+            thresholded_outputs[:, i, :, :] = torch.where(channel_output >= threshold, torch.tensor(1, device="cuda:0"), torch.tensor(0, device="cuda:0")).to(torch.device("cuda:0"))
     else:
-        for i in range(outputs.shape[1]):  # 针对每个 channel
-            channel_output = outputs[:, i, :, :]
-            threshold = 0.5
-            thresholded_outputs[:, i, :, :] = torch.where(channel_output >= threshold, torch.tensor(1), torch.tensor(0))
+        for i in range(outputs.shape[0]):
+            for j in range(outputs.shape[1]):  # 针对每个 channel
+                channel_output = outputs[i, j, :, :].to(torch.device("cuda:0"))
+                threshold = ((torch.abs(torch.max(channel_output) - torch.min(channel_output)) / 5.0 * 4.5) + torch.min(channel_output)).to(torch.device("cuda:0"))
+                thresholded_outputs[i, j, :, :] = torch.where(channel_output >= threshold, torch.tensor(1, device="cuda:0"), torch.tensor(0, device="cuda:0")).to(torch.device("cuda:0"))
+
+            #============for debug ===========================
+            img = distillation_img(sample['mask'].data.cpu().numpy(),
+                                      thresholded_outputs[i, :].argmax(dim=0).transpose(1, 2, 0).astype(np.uint8))
+            os.makedirs('threshold_img', exist_ok=True)
+            cv2.imwrite('threshold_img/%d.png' % i, img[:, :, ::-1])
+        # thresholded_outputs = outputs.argmax(dim=1).byte()
+
+
     return thresholded_outputs
 
 
 
 def sample_out(output, pos_number, neg_number):
     # Find coordinates of points with values 1 and 0 in the output tensor
-    pos_indices = torch.nonzero(torch.eq(output, 1))
-    neg_indices = torch.nonzero(torch.eq(output, 0))
+    # C , H , W = output.size()
+    # output = output.reshape(args.batch_size*C, H, W)
+    samples_final = []
+    label_final = []
+    for i in range(output.shape[0]):
+        pos_indices = torch.nonzero(torch.eq(output[i], 1)).to(torch.device("cuda:1"))
+        neg_indices = torch.nonzero(torch.eq(output[i], 0)).to(torch.device("cuda:1"))
 
-    # Randomly sample point coordinates
-    pos_samples = pos_indices[random.sample(range(pos_indices.shape[0]), pos_number)]
-    neg_samples = neg_indices[random.sample(range(neg_indices.shape[0]), neg_number)]
+        # if neg_indices.shape[0] == 0:
+        #     print('0_output',output[i])
+
+        # Randomly sample point coordinates
+        pos_samples = pos_indices[random.sample(range(pos_indices.shape[0]), pos_number)]#shape torch.Size([40, 2])
+        neg_samples = neg_indices[random.sample(range(neg_indices.shape[0]), neg_number)]
+        samples_final.append(torch.cat((pos_samples,neg_samples),axis=0))
+
+        pos_labels = torch.full((pos_number,), torch.tensor(1, device="cuda:1"))
+        neg_labels = torch.full((neg_number,), torch.tensor(0, device="cuda:1"))
+        label_final.append(torch.cat((pos_labels, neg_labels),axis=0))
 
     # Create a dictionary containing coordinates and corresponding labels
+    # print('len',len(label_final))
     sample_dict = {
-        'point': np.concatenate((pos_samples.numpy(), neg_samples.numpy()), axis=0),
-        'label': np.concatenate((np.full((pos_number,), 1), np.full((neg_number,), 0)), axis=0)
+        'point': torch.stack(samples_final,axis=0),
+        'label': torch.stack(label_final,axis=0)
     }
-
+    print(sample_dict['point'].shape)
+    print(sample_dict['label'].shape)
     return sample_dict
 
+def show_mask(mask,ax):
+    color = np.array([30/255,144/255,255,255,0.6])
+    h, w = mask.shape[-2:]
+    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+    ax.imshow(mask_image)
 
+def show_points(sample_coords, ax):
+    # 筛选出前景目标标记点
+    pos_points = sample_coords['points'][i][:args.pos_number].cpu().numpy()
+    # 筛选出背景目标标记点
+    neg_points = sample_coords['points'][i][args.pos_number + 1 :-1].cpu().numpy()
+    # x-->pos_points[:, 0] y-->pos_points[:, 1]
+    ax.scatter(pos_points[:, 0], pos_points[:, 1], color='red', marker='.', s=200)  # 前景的标记点显示
+    ax.scatter(neg_points[:, 0], neg_points[:, 1], color='blue', marker='.', s=200)  # 背景的标记点显示
 
 def train(segmenter, SAM, input_types, train_loader, optimizer, epoch,
           segm_crit, freeze_bn, lamda, print_loss=False):
@@ -351,26 +403,53 @@ def train(segmenter, SAM, input_types, train_loader, optimizer, epoch,
         hard_loss = 0
         soft_loss = 0
         loss = 0
-
+        _ , C , H, W = inputs[0].size()
+        # input_tensor = inputs[0].unsqueeze(1).repeat(1, 40, 1, 1, 1).view(-1, C, H, W)
+        # print('target_size!!!!!!!!!', target.size())  # torch.Size([500, 500])
+        # print('target_size!!!!!!!!!',target.size()[1:][::-1]) #torch.Size([500, 500])
         for output in outputs:
             teacher_outs = []
             output = nn.functional.interpolate(output, size=target.size()[1:],
                                                mode='bilinear', align_corners=False)
 
             soft_output = nn.LogSoftmax()(output)
+            normalize_output = nn.Softmax()(output)
 
-            thereshold_output = thres_out(soft_output,args.dynamic_threshold)
-            for batch in range(thereshold_output.shape[0]):
-                for channel in range(thereshold_output.shape[1]):
-                    sampled_output = sample_out(thereshold_output[batch][channel],args.pos_number,args.neg_number)
-                    teacher_out = SAM.run_sam(np.array(inputs[0]),sampled_output)
-                    teacher_outs.append(teacher_out)
-            teacher_outs = torch.cat(teacher_outs,dim=0).view(thereshold_output.shape[0],thereshold_output.shape[1],-1,-1)
-            target_labels = torch.argmax(teacher_outs, dim=1)
+            thereshold_output = thres_out(soft_output,args.dynamic_threshold)#(10,40,...)
+            # sampled_output = sample_out(thereshold_output,args.pos_number,args.neg_number)
+            os.makedirs('teacher_img', exist_ok=True)
+            for batch in range(args.batch_size):
+                sampled_output = sample_out(thereshold_output[batch], args.pos_number, args.neg_number)
+                teacher_out = SAM.run_sam((inputs[0][batch].permute(1, 2, 0).cpu().numpy()).astype(np.uint8) * 255,sampled_output)#DON'T know if to multiple 255
+
+                #-----------------for debug------------------------
+                for i,mask in enumerate(teacher_out):
+                    plt.figure(figsize=(10,10))
+                    plt.imshow(inputs[0][batch].permute(1, 2, 0).cpu().numpy().astype(np.uint8))
+                    show_mask(mask,plt.gca())
+                    show_points(sampled_output,i)
+                    plt.axis('off')
+                    plt.savefig('teacher_img/{}.png'.format(i))
+
+                # print('masks', teacher_out.shape)
+                teacher_outs.append(teacher_out)
+            # for batch in range(thereshold_output.shape[0]):
+            #     for channel in range(thereshold_output.shape[1]):
+            #         sampled_output = sample_out(thereshold_output[batch][channel],args.pos_number,args.neg_number)
+            #         teacher_out = SAM.run_sam(inputs[0][batch],sampled_output)
+            #         teacher_outs.append(teacher_out)
+            # print('len',len(teacher_outs))
+            teacher_outs_tensors = [torch.tensor(arr) for arr in teacher_outs]
+            teacher_outs = torch.stack(teacher_outs_tensors,dim=0).view(10, 40, 500, 500).float().argmax(dim=1)
+            # print(teacher_outs.shape)#torch.Size([10, 40, 1, 500, 500])
+            # print('softout',soft_output.shape)
+            # target_labels = torch.argmax(teacher_outs, dim=1) # the output is a True/False map
             # Compute loss and backpropagate
-            soft_loss += segm_crit(soft_output / args.temp, target_labels / args.temp)
+            soft_loss += segm_crit(soft_output, teacher_outs.to(torch.device("cuda:0")))
             hard_loss += segm_crit(soft_output, target)
             loss += args.alpha * hard_loss + (1 - args.alpha) * soft_loss
+
+            print(loss)
 
 
         """
@@ -537,9 +616,10 @@ def main():
     np.random.seed(args.random_seed)
     random.seed(args.random_seed)
     # Generate Segmenter
+    print_log('cuda gpus!!!{}'.format(args.gpu[0]))
     torch.cuda.set_device(args.gpu[0])
     segmenter, param_groups = create_segmenter(args.num_classes, args.gpu, args.backbone)
-    SAM_Model = SAM(args.sam_checkpoint,args.model_type)
+    SAM_Model = SAM(args.model_type,args.sam_checkpoint)
 
     if args.print_network:
         print_log('')
