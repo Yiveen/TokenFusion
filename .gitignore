@@ -7,3 +7,6 @@ __pycache__
 /semantic_segmentation/logs/
 /semantic_segmentation/pretrained_models/
 /semantic_segmentation/ckpt/
+/semantic_segmentation/teacher_img
+/semantic_segmentation/threshold_img
+/semantic_segmentation/.idea

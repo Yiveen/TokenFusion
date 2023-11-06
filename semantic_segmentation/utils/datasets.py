@@ -63,9 +63,12 @@ class SegDataset(Dataset):
         sample = {}
         for i, key in enumerate(self.input_names):
             sample[key] = self.read_image(names[idxs[i]], key)
-            image = cv2.imread(names[idxs[i]])
-            samimage = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            sample['samimage'] = cv2.cvtColor(samimage, cv2.COLOR_BGR2RGB)
+            # print('names',names)
+            # print('idx',idxs)
+            # print('i',i)
+            image = cv2.imread(names[0])
+            resized_image = cv2.resize(image, (500, 500))
+            sample['samimage'] = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
         try:
             mask = np.array(Image.open(names[idxs[-1]]))
         except FileNotFoundError:  # for sunrgbd
