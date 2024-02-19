@@ -65,10 +65,10 @@ def make_validation_img(img_, depth_, lab, pre):
 def distillation_img(lab, pre):
     cmap = np.load('./utils/cmap.npy')
 
-    print('lab',lab.shape)
+    # print('lab',lab.shape)
     lab = np.array([cmap[i.astype(np.uint8) + 1] for i in lab])
 
-    print('pre', pre.shape)
+    # print('pre', pre.shape)
 
     pre = np.array([cmap[i.astype(np.uint8) + 1] for i in np.squeeze(pre)])#TODO:Check
 
